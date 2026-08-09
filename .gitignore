@@ -1,0 +1,33 @@
+# Environment Variables & Secrets (CRITICAL SECURITY)
+.env
+*.env
+.env.*
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python Bytecode & Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# IDE & Editor Configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker / Database Data (if stored locally)
+postgres_data/
+*.sqlite3
+*.db
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+EOF
