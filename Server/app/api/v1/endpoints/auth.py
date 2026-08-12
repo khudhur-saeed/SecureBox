@@ -22,8 +22,8 @@ from app.schemas.auth import (
 )
 
 # Secret key used server-side strictly to sign JWT access tokens (loaded from config/env)
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-JWT_ALGORITHM = "HS256"
+JWT_SECRET_KEY = settings.JWT_SECRET_KEY
+JWT_ALGORITHM = settings.JWT_ALGORITHM
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
