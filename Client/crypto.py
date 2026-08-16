@@ -60,19 +60,22 @@ def encrypt_vault_item(
     # 2. Associated Data binds the ciphertext to this specific item_id
     associated_data = item_id.encode("utf-8")
 
-    # 3. Encrypt using AES-256-GCM
+    # 3. Ensure data is bytes (handles both str and bytes)
+    data_bytes = plaintext.encode("utf-8") if isinstance(plaintext, str) else plaintext
+
+    # 4. Encrypt using AES-256-GCM
     aesgcm = AESGCM(mek)
     encrypted_blob = aesgcm.encrypt(
         nonce=nonce,
-        data=plaintext.encode("utf-8"),
+        data=data_bytes,
         associated_data=associated_data,
     )
 
-    # 4. Extract ciphertext and the 16-byte authentication tag
+    # 5. Extract ciphertext and the 16-byte authentication tag
     ciphertext = encrypted_blob[:-16]
     auth_tag = encrypted_blob[-16:]
 
-    # 5. Return Base64-encoded representations for JSON transport
+    # 6. Return Base64-encoded representations for JSON transport
     return {
         "nonce": base64.b64encode(nonce).decode("utf-8"),
         "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),

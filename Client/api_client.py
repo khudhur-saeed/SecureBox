@@ -19,7 +19,7 @@ class ApiClient:
 
     def prelogin(self, email: str) -> Dict[str, Any]:
         """Fetches the user's public salt and Argon2 KDF parameters prior to key derivation."""
-        response = self.client.post("/api/v1/auth/prelogin", json={"email": email})
+        response = self.client.post("/api/v1/auth/preflight", json={"email": email})
         response.raise_for_status()
         return response.json()
 
@@ -52,7 +52,7 @@ class ApiClient:
         """Authenticates using the derived MAK, retrieves JWT access token, and sets session header."""
         payload = {
             "email": email,
-            "auth_key": auth_key_b64,
+            "auth_response": auth_key_b64,
         }
         response = self.client.post("/api/v1/auth/verify-challenge", json=payload)
         response.raise_for_status()

@@ -142,7 +142,7 @@ def login(
         # Step 2: Client-side Key Derivation
         with console.status("[bold yellow]Deriving keys locally...[/bold yellow]"):
             mek, mak = derive_master_keys(
-                password=password,
+                master_password=password,
                 salt=auth_salt,
                 time_cost=time_cost,
                 memory_cost=memory_cost,
@@ -162,14 +162,12 @@ def login(
         _interactive_vault_session(api=api, mek=mek, user_email=email)
 
     except httpx.HTTPStatusError as e:
-        detail = e.response.json().get("detail", e.response.text)
+        try:
+            detail = e.response.json().get("detail", e.response.text)
+        except Exception:
+            detail = e.response.text or f"HTTP {e.response.status_code}"
         console.print(
             f"[bold red]Authentication failed ({e.response.status_code}): {detail}[/bold red]"
-        )
-        raise typer.Exit(code=1)
-    except httpx.RequestError as e:
-        console.print(
-            f"[bold red]Could not connect to server at {server_url}: {e}[/bold red]"
         )
         raise typer.Exit(code=1)
     finally:
@@ -268,14 +266,14 @@ def _handle_list_vault(api: ApiClient, mek: bytes) -> None:
 
             try:
                 # Decrypt locally using the in-memory MEK and item_id as Associated Data
-                plaintext_bytes = decrypt_vault_item(
+                plaintext_str = decrypt_vault_item(
                     mek=mek,
                     item_id=item_id,
                     nonce_b64=nonce_b64,
                     ciphertext_b64=ciphertext_b64,
                     auth_tag_b64=auth_tag_b64,
                 )
-                secret_data = json.loads(plaintext_bytes.decode("utf-8"))
+                secret_data = json.loads(plaintext_str)
 
                 title = secret_data.get("title", "<No Title>")
                 username = secret_data.get("username", "<N/A>")
@@ -321,13 +319,14 @@ def _handle_add_vault_item(api: ApiClient, mek: bytes) -> None:
         "password": password,
         "notes": notes,
     }
-    plaintext_bytes = json.dumps(payload_dict).encode("utf-8")
+    plaintext_bytes = json.dumps(payload_dict)
+
 
     # 2. Generate a unique item UUID (also serves as Associated Data)
     item_id = str(uuid.uuid4())
 
     # 3. Encrypt locally
-    nonce_b64, ciphertext_b64, auth_tag_b64 = encrypt_vault_item(
+    encrypted_data = encrypt_vault_item(
         mek=mek,
         item_id=item_id,
         plaintext=plaintext_bytes,
@@ -338,9 +337,9 @@ def _handle_add_vault_item(api: ApiClient, mek: bytes) -> None:
         with console.status("[bold green]Uploading encrypted entry...[/bold green]"):
             api.create_vault_item(
                 item_id=item_id,
-                nonce_b64=nonce_b64,
-                ciphertext_b64=ciphertext_b64,
-                auth_tag_b64=auth_tag_b64,
+                nonce_b64=encrypted_data["nonce"],
+                ciphertext_b64=encrypted_data["ciphertext"],
+                auth_tag_b64=encrypted_data["auth_tag"],
             )
         console.print(
             f"[bold green]✓ Item '{title}' successfully encrypted and stored! (ID: {item_id})[/bold green]\n"
