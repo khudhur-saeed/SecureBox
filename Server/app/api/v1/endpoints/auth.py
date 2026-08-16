@@ -122,7 +122,7 @@ async def preflight_challenge(
     expires_at = now + timedelta(minutes=5)
     new_challenge = AuthChallenge(
         user_id=user.id,
-        challenge_nonce=raw_challenge,
+        challenge=raw_challenge,
         expires_at=expires_at
     )
     db.add(new_challenge)
