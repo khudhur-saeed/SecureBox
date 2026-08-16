@@ -188,9 +188,11 @@ async def verify_challenge(
     await db.commit()
 
     # Line 6: Perform constant-time verification of the signature
-    # (Note: Client computed HMAC-SHA256 over raw challenge_nonce using MPH as key)
-    # The server verifies that the signature matches what the holder of MPH would produce.
-    # In a full Argon2id setup, server verifies Argon2id(MPH) == server_password_hash.
+    if not secrets.compare_digest(payload.auth_response, user.server_password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials."
+        )
     
     # Line 7: Create JWT payload and sign token
     token_expires_in = 3600  # Token valid for 1 hour (3600 seconds)
