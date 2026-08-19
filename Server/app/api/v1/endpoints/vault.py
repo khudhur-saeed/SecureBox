@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_db
 from app.db.models  import VaultItem, User
 from app.api.deps import get_current_user 
-from app.schemas.vault import VaultItemResponse, VaultItemCreateRequest, VaultListResponse
+from app.schemas.vault import VaultItemResponse, VaultItemCreateRequest, VaultListResponse, VaultItemUpdate
 import base64 
+import binascii
 
 router = APIRouter(prefix="/vault",tags=["Vault Items"])
 
@@ -118,8 +119,60 @@ async def delete_vault_item(
     await db.commit()
     return None
     
+@router.put("/{item_id}")
+async def update_vault_item(
+    item_id: UUID,
+    payload: VaultItemUpdate,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user)
+):
+    query = select(VaultItem).where(VaultItem.id == item_id,VaultItem.user_id == current_user.id)
+    result = await db.execute(query)
+    stored_vault_item = result.scalar_one_or_none()
+
+    if stored_vault_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="There is no matching vault item!"
+        )
+
+    try:
+        ciphertext_raw = base64.b64decode(payload.ciphertext)
+        nonce_raw = base64.b64decode(payload.nonce)
+        auth_tag_raw = base64.b64decode(payload.auth_tag)
+    except (binascii.Error, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Base64 encoding in payload"
+        )
+
+    if len(nonce_raw) != 12 :
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid cryptographic parameters"
+        )
+
+    if len(auth_tag_raw) != 16 :
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid cryptographic parameters"
+        )
+
+    stored_vault_item.nonce = nonce_raw
+    stored_vault_item.ciphertext = ciphertext_raw
+    stored_vault_item.auth_tag = auth_tag_raw
     
 
-             
+    await db.commit()
+    await db.refresh(stored_vault_item)
+
+    return VaultItemResponse(
+        id=stored_vault_item.id,
+        nonce=base64.b64encode(stored_vault_item.nonce).decode('utf-8'),
+        ciphertext=base64.b64encode(stored_vault_item.ciphertext).decode('utf-8'),
+        auth_tag=base64.b64encode(stored_vault_item.auth_tag).decode('utf-8')
+    )
+
+    
 
 

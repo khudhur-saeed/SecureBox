@@ -97,3 +97,16 @@ class ApiClient:
         response = self.client.delete(f"/api/v1/vault/{item_id}")
         response.raise_for_status()
         return response.status_code == 204
+
+    def update_vault_item(self, item_id: str, nonce_b64: str, auth_tag_b64: str, ciphertext_b64: str) -> dict:
+        """Sends updated encrypted item data to the server."""
+        payload ={
+            "ciphertext":ciphertext_b64,
+            "nonce":nonce_b64,
+            "auth_tag":auth_tag_b64
+        }
+        response=self.client.put(f"/api/v1/vault/{item_id}",json=payload)
+        response.raise_for_status()
+        return response.json()
+
+    

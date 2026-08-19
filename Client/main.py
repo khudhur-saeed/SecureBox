@@ -111,6 +111,7 @@ def register(
     finally:
         api.close()
 
+
 @app.command()
 def login(
     server_url: str = typer.Option(
@@ -190,28 +191,34 @@ def _interactive_vault_session(api: ApiClient, mek: bytes, user_email: str) -> N
             command = (
                 Prompt.ask(f"[bold cyan]securebox[/bold cyan] ([green]{user_email}[/green])")
                 .strip()
-                .lower()
             )
 
             if not command:
                 continue
 
-            if command in ("exit", "quit", "q"):
+            cmd_lower = command.lower()
+
+            if cmd_lower in ("exit", "quit", "q"):
                 console.print(
                     "[bold yellow]Locking vault and purging encryption keys from memory. Goodbye![/bold yellow]"
                 )
                 break
 
-            elif command == "help":
+            elif cmd_lower == "help":
                 _print_help_table()
 
-            elif command == "list":
+            elif cmd_lower == "list":
                 _handle_list_vault(api=api, mek=mek)
 
-            elif command == "add":
+            elif cmd_lower == "add":
                 _handle_add_vault_item(api=api, mek=mek)
 
-            elif command.startswith("delete"):
+            elif cmd_lower.startswith("update"):
+                parts = command.split()
+                item_id = parts[1] if len(parts) > 1 else None
+                _handle_update_vault_item(api=api, mek=mek, item_id=item_id)
+
+            elif cmd_lower.startswith("delete"):
                 parts = command.split()
                 if len(parts) < 2:
                     console.print(
@@ -265,7 +272,6 @@ def _handle_list_vault(api: ApiClient, mek: bytes) -> None:
             auth_tag_b64 = item["auth_tag"]
 
             try:
-                # Decrypt locally using the in-memory MEK and item_id as Associated Data
                 plaintext_str = decrypt_vault_item(
                     mek=mek,
                     item_id=item_id,
@@ -283,7 +289,6 @@ def _handle_list_vault(api: ApiClient, mek: bytes) -> None:
                 table.add_row(item_id, title, username, secret_pwd, notes)
 
             except Exception:
-                # If Galois tag validation fails or JSON is corrupted
                 table.add_row(
                     item_id,
                     "[bold red]DECRYPTION FAILED[/bold red]",
@@ -312,27 +317,21 @@ def _handle_add_vault_item(api: ApiClient, mek: bytes) -> None:
         console.print("[bold red]Error: Title and password are required.[/bold red]")
         return
 
-    # 1. Package plaintext into structured JSON
     payload_dict = {
         "title": title,
         "username": username,
         "password": password,
         "notes": notes,
     }
-    plaintext_bytes = json.dumps(payload_dict)
-
-
-    # 2. Generate a unique item UUID (also serves as Associated Data)
+    plaintext_str = json.dumps(payload_dict)
     item_id = str(uuid.uuid4())
 
-    # 3. Encrypt locally
     encrypted_data = encrypt_vault_item(
         mek=mek,
         item_id=item_id,
-        plaintext=plaintext_bytes,
+        plaintext=plaintext_str,
     )
 
-    # 4. Upload pre-encrypted payload to backend
     try:
         with console.status("[bold green]Uploading encrypted entry...[/bold green]"):
             api.create_vault_item(
@@ -348,6 +347,80 @@ def _handle_add_vault_item(api: ApiClient, mek: bytes) -> None:
         console.print(
             f"[bold red]Failed to save item ({e.response.status_code}): {e.response.text}[/bold red]"
         )
+
+
+def _handle_update_vault_item(api: ApiClient, mek: bytes, item_id: Optional[str] = None) -> None:
+    """Fetches an existing item, decrypts it to show current values, prompts for edits, and uploads re-encrypted data."""
+    try:
+        with console.status("[bold green]Fetching vault items...[/bold green]"):
+            raw_items = api.list_vault_items()
+
+        if not raw_items:
+            console.print("[yellow]Vault is empty. Nothing to update.[/yellow]\n")
+            return
+
+        if not item_id:
+            item_id = Prompt.ask("Enter the Item ID to update").strip()
+
+        target_item = next((it for it in raw_items if it["id"] == item_id), None)
+        if not target_item:
+            console.print(f"[bold red]Error: Item with ID '{item_id}' not found in your vault.[/bold red]\n")
+            return
+
+        try:
+            plaintext_str = decrypt_vault_item(
+                mek=mek,
+                item_id=item_id,
+                nonce_b64=target_item["nonce"],
+                ciphertext_b64=target_item["ciphertext"],
+                auth_tag_b64=target_item["auth_tag"],
+            )
+            current_data = json.loads(plaintext_str)
+        except Exception as e:
+            console.print(f"[bold red]Decryption failed: {e}[/bold red]\n")
+            return
+
+        console.print(f"\n[bold yellow]Editing secret for: {current_data.get('title', 'Untitled')}[/bold yellow]")
+        console.print("[dim](Press Enter on any field to keep the current value)[/dim]\n")
+
+        new_title = Prompt.ask("Title", default=current_data.get("title", ""))
+        new_username = Prompt.ask("Username / Email", default=current_data.get("username", ""))
+        new_password = Prompt.ask("Password", default=current_data.get("password", ""), password=True)
+        new_notes = Prompt.ask("Notes", default=current_data.get("notes", ""))
+
+        if not new_title or not new_password:
+            console.print("[bold red]Error: Title and password cannot be empty.[/bold red]\n")
+            return
+
+        updated_dict = {
+            "title": new_title,
+            "username": new_username,
+            "password": new_password,
+            "notes": new_notes,
+        }
+        updated_plaintext_str = json.dumps(updated_dict)
+
+        # Fresh Nonce generation is handled inside encrypt_vault_item
+        encrypted_data = encrypt_vault_item(
+            mek=mek,
+            item_id=item_id,
+            plaintext=updated_plaintext_str,
+        )
+
+        with console.status("[bold green]Saving changes to server...[/bold green]"):
+            api.update_vault_item(
+                item_id=item_id,
+                nonce_b64=encrypted_data["nonce"],
+                ciphertext_b64=encrypted_data["ciphertext"],
+                auth_tag_b64=encrypted_data["auth_tag"],
+            )
+
+        console.print(f"[bold green]✓ Successfully updated item '{new_title}' ({item_id})![/bold green]\n")
+
+    except httpx.HTTPStatusError as e:
+        console.print(f"[bold red]Failed to update item ({e.response.status_code}): {e.response.text}[/bold red]\n")
+    except Exception as e:
+        console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]\n")
 
 
 def _handle_delete_vault_item(api: ApiClient, item_id: str) -> None:
@@ -374,6 +447,7 @@ def _print_help_table() -> None:
     table.add_column("Description", style="white")
     table.add_row("list", "Fetch and decrypt all vault items")
     table.add_row("add", "Prompt for credentials, encrypt locally, and store")
+    table.add_row("update [id]", "Update an existing item with fresh encryption")
     table.add_row("delete <id>", "Delete an item permanently by its UUID")
     table.add_row("help", "Show this list of commands")
     table.add_row("exit / quit", "Purge keys from RAM and exit the application")
