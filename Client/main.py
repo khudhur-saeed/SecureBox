@@ -227,6 +227,11 @@ def _interactive_vault_session(api: ApiClient, mek: bytes, user_email: str) -> N
                 else:
                     _handle_delete_vault_item(api=api, item_id=parts[1])
 
+            elif cmd_lower.startswith("search"):
+                parts = command.split(maxsplit=1)
+                search_query = parts[1].strip() if len(parts) > 1 else None
+                _handle_search_vault(api=api, mek=mek, query=search_query)
+
             else:
                 console.print(
                     f"[bold red]Unknown command:[/bold red] '{command}'. Type [bold cyan]help[/bold cyan] for available commands."
@@ -438,6 +443,93 @@ def _handle_delete_vault_item(api: ApiClient, item_id: str) -> None:
         console.print(
             f"[bold red]Failed to delete item ({e.response.status_code}): {e.response.text}[/bold red]"
         )
+def _handle_search_vault(api: ApiClient, mek: bytes, query: Optional[str] = None) -> None:
+    """Fetches encrypted items, decrypts them in RAM, and filters matches locally."""
+    try:
+    
+        if not query:
+            query = Prompt.ask("[bold cyan]Enter search term (title, username, or notes)[/bold cyan]").strip()
+
+        if not query:
+            console.print("[yellow]Search cancelled (empty query).[/yellow]\n")
+            return
+
+        query_lower = query.lower()
+
+       
+        with console.status("[bold green]Fetching & decrypting vault items in RAM...[/bold green]"):
+            raw_items = api.list_vault_items()
+
+        if not raw_items:
+            console.print("[dim]Your vault is empty.[/dim]\n")
+            return
+
+        matching_rows = []
+
+     
+        for item in raw_items:
+            item_id = str(item["id"])
+            nonce_b64 = item["nonce"]
+            ciphertext_b64 = item["ciphertext"]
+            auth_tag_b64 = item["auth_tag"]
+
+            try:
+                plaintext_str = decrypt_vault_item(
+                    mek=mek,
+                    item_id=item_id,
+                    nonce_b64=nonce_b64,
+                    ciphertext_b64=ciphertext_b64,
+                    auth_tag_b64=auth_tag_b64,
+                )
+                secret_data = json.loads(plaintext_str)
+
+                title = secret_data.get("title", "<No Title>")
+                username = secret_data.get("username", "<N/A>")
+                secret_pwd = secret_data.get("password", "********")
+                notes = secret_data.get("notes", "")
+
+                searchable_text = f"{title} {username} {notes}".lower()
+                if query_lower in searchable_text:
+                    matching_rows.append((item_id, title, username, secret_pwd, notes))
+
+            except Exception:
+               
+                if query_lower in "decryption failed integrity check failed":
+                    matching_rows.append(
+                        (item_id, "[bold red]DECRYPTION FAILED[/bold red]", "-", "-", "[red]Integrity check failed[/red]")
+                    )
+
+        if not matching_rows:
+            console.print(f"[yellow]No matching items found for query:[/yellow] '{query}'\n")
+            return
+
+        table = Table(
+            title=f"🔍 Search Results for '{query}' ({len(matching_rows)} found)",
+            show_lines=True,
+            header_style="bold magenta",
+        )
+        table.add_column("Item ID", style="dim", no_wrap=True)
+        table.add_column("Title / Service", style="bold cyan")
+        table.add_column("Username / Email", style="green")
+        table.add_column("Password", style="yellow")
+        table.add_column("Notes", style="dim")
+
+        for row in matching_rows:
+            table.add_row(*row)
+
+        console.print(table)
+        console.print()
+
+    except httpx.HTTPStatusError as e:
+        console.print(
+            f"[bold red]Failed to fetch vault items ({e.response.status_code}): {e.response.text}[/bold red]\n"
+        )
+    except Exception as e:
+        console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]\n")
+
+
+
+
 
 
 def _print_help_table() -> None:
@@ -448,6 +540,7 @@ def _print_help_table() -> None:
     table.add_row("list", "Fetch and decrypt all vault items")
     table.add_row("add", "Prompt for credentials, encrypt locally, and store")
     table.add_row("update [id]", "Update an existing item with fresh encryption")
+    table.add_row("search [query]", "Search vault items in memory by keyword")
     table.add_row("delete <id>", "Delete an item permanently by its UUID")
     table.add_row("help", "Show this list of commands")
     table.add_row("exit / quit", "Purge keys from RAM and exit the application")
