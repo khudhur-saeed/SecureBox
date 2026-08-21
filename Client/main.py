@@ -4,7 +4,7 @@ import os
 import sys
 import uuid
 from typing import Optional
-
+from datetime import datetime
 import httpx
 from rich.console import Console
 from rich.panel import Panel
@@ -14,6 +14,8 @@ import typer
 
 from Client.api_client import ApiClient
 from Client.crypto import decrypt_vault_item, derive_master_keys, encrypt_vault_item
+from Client.generator import generate_passphrase, generate_password, calculate_entropy
+
 
 app = typer.Typer(
     help="SecureBox: Zero-Knowledge CLI Password Manager",
@@ -226,12 +228,12 @@ def _interactive_vault_session(api: ApiClient, mek: bytes, user_email: str) -> N
                     )
                 else:
                     _handle_delete_vault_item(api=api, item_id=parts[1])
-
             elif cmd_lower.startswith("search"):
                 parts = command.split(maxsplit=1)
                 search_query = parts[1].strip() if len(parts) > 1 else None
                 _handle_search_vault(api=api, mek=mek, query=search_query)
-
+            elif cmd_lower.startswith("generate") or cmd_lower == "gen":
+                _handle_generate_password(api=api, mek=mek)
             else:
                 console.print(
                     f"[bold red]Unknown command:[/bold red] '{command}'. Type [bold cyan]help[/bold cyan] for available commands."
@@ -315,7 +317,20 @@ def _handle_add_vault_item(api: ApiClient, mek: bytes) -> None:
     """Prompts for credentials, encrypts them locally with AES-256-GCM, and uploads to the server."""
     title = Prompt.ask("Enter service / website title (e.g. GitHub)").strip()
     username = Prompt.ask("Enter username / login email").strip()
-    password = Prompt.ask("Enter secret password", password=True)
+
+    gen_choice = Prompt.ask(
+        "Password option",
+        choices=["enter", "generate"],
+        default="enter"
+    )
+
+    if gen_choice == "generate":
+        password = generate_password(length=20)
+        entropy_val, rating = calculate_entropy(password)
+        console.print(f"[bold green]Generated Password:[/bold green] [bold cyan]{password}[/bold cyan] ({entropy_val} bits - {rating})")
+    else:
+        password = Prompt.ask("Enter secret password", password=True)
+
     notes = Prompt.ask("Enter notes (optional)", default="").strip()
 
     if not title or not password:
@@ -526,11 +541,84 @@ def _handle_search_vault(api: ApiClient, mek: bytes, query: Optional[str] = None
         )
     except Exception as e:
         console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]\n")
+def _handle_generate_password(api: ApiClient, mek: bytes)-> None:
+    """Prompts for preferences, generates a CSPRNG secret, and optionally saves it directly to the vault."""
+    gen_type = Prompt.ask(
+        "[bold cyan]Select type[/bold cyan]",
+        choices=["password", "passphrase"],
+        default="password",
+    )
+    if gen_type == "password":
+        length_str = Prompt.ask("[bold cyan]Enter password length[/bold cyan]", default="20")
+        try:
+            length = int(length_str)
+        except ValueError:
+            length = 20
 
+        secret_val = generate_password(length=length)
+      
+    else:
+        words_str = Prompt.ask("[bold cyan]Enter number of words[/bold cyan]", default="4")
+        try:
+            num_words = int(words_str)
+        except ValueError:
+            num_words = 4
 
+        secret_val = generate_passphrase(num_words=num_words)
 
+    entropy_val, rating = calculate_entropy(secret_val)
 
+    console.print(
+        f"\n[bold green]Generated Secret:[/bold green] [bold white on blue] {secret_val} [/bold white on blue]"
+    )
+    console.print(f"Entropy: [bold]{entropy_val} bits[/bold] | Strength: {rating}\n")
 
+    save_confirm = typer.confirm("Do you want to save this generated secret to your vault now?", default=False)
+    if not save_confirm:
+        return
+
+    title = Prompt.ask("Enter service / website title (e.g. GitHub)").strip()
+    username = Prompt.ask("Enter username / login email").strip()
+    default_note = f"Auto-generated on {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    notes = Prompt.ask("Enter notes (optional)", default=default_note).strip()
+
+    if not title:
+        console.print("[bold red]Error: Service title is required to save.[/bold red]\n")
+        return
+
+    payload_dict = {
+        "title": title,
+        "username": username,
+        "password": secret_val,
+        "notes": notes,
+    }
+    plaintext_str = json.dumps(payload_dict)
+    item_id = str(uuid.uuid4())
+
+    encrypted_data = encrypt_vault_item(
+        mek=mek,
+        item_id=item_id,
+        plaintext=plaintext_str,
+    )
+
+    try:
+        with console.status("[bold green]Encrypting and storing generated secret...[/bold green]"):
+            api.create_vault_item(
+                item_id=item_id,
+                nonce_b64=encrypted_data["nonce"],
+                ciphertext_b64=encrypted_data["ciphertext"],
+                auth_tag_b64=encrypted_data["auth_tag"],
+            )
+        console.print(
+            f"[bold green]✓ Secret for '{title}' successfully encrypted and saved to vault! (ID: {item_id})[/bold green]\n"
+        )
+    except httpx.HTTPStatusError as e:
+        console.print(
+            f"[bold red]Failed to save generated secret ({e.response.status_code}): {e.response.text}[/bold red]\n"
+        )
+        
+
+        
 
 def _print_help_table() -> None:
     """Displays available interactive commands."""
@@ -542,6 +630,7 @@ def _print_help_table() -> None:
     table.add_row("update [id]", "Update an existing item with fresh encryption")
     table.add_row("search [query]", "Search vault items in memory by keyword")
     table.add_row("delete <id>", "Delete an item permanently by its UUID")
+    table.add_row("generate (or gen)", "Generate a CSPRNG password or Diceware passphrase")
     table.add_row("help", "Show this list of commands")
     table.add_row("exit / quit", "Purge keys from RAM and exit the application")
     console.print(table)
